@@ -14,7 +14,7 @@ npm ci
 npm run dev
 ```
 
-Copy `.env.example` to `.env.local` only when configuring inquiry delivery. Never commit credentials. The form requires `BLOB_STORE_ID` (Vercel OIDC) or a legacy `BLOB_READ_WRITE_TOKEN`, plus a separate `INQUIRY_RECEIPT_SECRET` of at least 32 characters. Preview capture is disabled unless explicitly enabled with a separate test store. See `FORM_SETUP.md` for notification setup and the read-only reconciliation command. Storage remains available without email configuration; notification outcomes make that limitation explicit to operators.
+Copy `.env.example` to `.env.local` only when configuring inquiry delivery. Never commit credentials. The form requires `BLOB_STORE_ID` (Vercel OIDC) or a legacy `BLOB_READ_WRITE_TOKEN`, plus a separate `INQUIRY_RECEIPT_SECRET` of at least 32 characters. Preview capture is disabled unless explicitly enabled with a separate test store. See `FORM_SETUP.md` for delivery setup. Storage remains available without email configuration; notification outcomes make that limitation explicit to operators.
 
 ## Editing listing content
 
@@ -34,7 +34,8 @@ See [`FORM_SETUP.md`](./FORM_SETUP.md) for the complete deployment, testing, and
 
 1. Create and link a **private** Vercel Blob store. This is the durable lead inbox.
 2. Optionally connect Resend and set `LEAD_NOTIFICATION_TO` plus `LEAD_NOTIFICATION_FROM` on a verified sending domain. Storage succeeds before notification is attempted, so a mail outage does not lose the inquiry.
-3. Submit a clearly marked test inquiry on production, confirm the success receipt, retrieve the corresponding private Blob record, then delete the test record.
+3. Configure the production-only Google Sheets mirror when the team needs a live lead view. [`docs/inquiry-sheet-sync.md`](./docs/inquiry-sheet-sync.md) covers the Apps Script receiver, one-time backfill, and daily repair.
+4. Submit a clearly marked test inquiry on production, confirm the success receipt, retrieve the corresponding private Blob record, then delete the test record.
 
 Production lead records contain personal information. Restrict Blob access to the listing operations owner, honor deletion requests against the receipt ID, and agree on a retention period before enabling automated deletion. The factory intentionally does not guess a destructive retention window.
 

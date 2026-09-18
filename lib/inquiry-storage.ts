@@ -1,16 +1,23 @@
 import { get, put } from "@vercel/blob";
 import { createHmac } from "node:crypto";
-import { InquiryConflictError, inquirySchema, type CapturedInquiry } from "./inquiry-delivery";
+import { InquiryConflictError, inquirySchema, type CapturedInquiry, type StoredInquiry } from "./inquiry-delivery";
 import { z } from "zod";
 
-const storedSchema = inquirySchema.omit({ website: true, submissionId: true }).extend({ receiptId: z.string(), capturedAt: z.iso.datetime() });
+export const storedInquirySchema = inquirySchema.omit({ website: true, submissionId: true }).extend({
+  receiptId: z.string().regex(/^[a-f0-9]{32}$/),
+  capturedAt: z.iso.datetime(),
+});
+
+type InquiryStorage = Readonly<{
+  write: (path: string, value: unknown) => Promise<unknown>;
+  read: (path: string) => Promise<unknown | null>;
+}>;
 
 export function receiptIdFor(propertyId: string, submissionId: string, secret: string) {
   if (secret.trim().length < 32) throw new Error("Receipt signing secret is not configured");
   return createHmac("sha256", secret).update(`${propertyId}:${submissionId}`).digest("hex").slice(0, 32);
 }
 
-// No date in the key: retries across midnight must address the same record.
 export function inquiryPath(inquiry: Pick<CapturedInquiry, "propertyId" | "receiptId">) {
   return `leads/${inquiry.propertyId}/${inquiry.receiptId}.json`;
 }
@@ -34,17 +41,19 @@ export async function writePrivateJson(path: string, value: unknown) {
   });
 }
 
-/** Atomic create; a duplicate never overwrites the original lead or timestamp. */
-export async function storeInquiry(inquiry: CapturedInquiry, storage = { write: writePrivateJson, read: readPrivateJson }) {
+export async function storeInquiry(
+  inquiry: CapturedInquiry,
+  storage: InquiryStorage = { write: writePrivateJson, read: readPrivateJson },
+): Promise<StoredInquiry> {
   const path = inquiryPath(inquiry);
   try {
     await storage.write(path, inquiry);
-    return { created: true };
+    return { disposition: "created", inquiry };
   } catch (writeError) {
-    // Also resolves an ambiguous write timeout without assuming the lead was lost.
     const existing = await storage.read(path);
     if (!existing) throw writeError;
-    if (!sameInquiry(storedSchema.parse(existing), inquiry)) throw new InquiryConflictError();
-    return { created: false };
+    const persisted = storedInquirySchema.parse(existing);
+    if (!sameInquiry(persisted, inquiry)) throw new InquiryConflictError();
+    return { disposition: "existing", inquiry: persisted };
   }
 }

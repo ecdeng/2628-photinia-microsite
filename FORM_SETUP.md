@@ -11,8 +11,13 @@ Every valid inquiry follows this order:
 3. The server writes the complete inquiry to a **private Vercel Blob store**.
 4. After durable storage succeeds, the form resets without displaying confirmation text. The API still returns a receipt ID for internal tracing.
 5. If Resend is configured, the server then sends an email notification with the buyer as the reply-to address.
+6. If the Google Sheets mirror is configured in Production, the server posts the record to the Sheet receiver. A daily reconciliation retries every authoritative Blob record.
 
-Blob is the system of record. Resend is only a notification channel. If Resend is unavailable, the lead remains stored and the notification failure is written to the Vercel function logs.
+Blob is the system of record. Resend is only a notification channel. Google Sheets is a rebuildable view. If either channel is unavailable, the lead remains stored.
+
+## Google Sheets mirror
+
+The mirror runs only in Production. Do not configure it for Preview or Development because preview traffic must never write to the production Sheet. Use [`docs/inquiry-sheet-sync.md`](./docs/inquiry-sheet-sync.md) to install the Apps Script receiver, add the production variables, backfill existing Blob records, and verify the full path.
 
 ## 1. Connect private lead storage
 
@@ -111,4 +116,4 @@ Assign and document:
 - the process for locating and deleting a lead by receipt ID; and
 - who monitors Vercel function logs and Resend delivery failures.
 
-Automatic deletion remains disabled at the owner's explicit request. There is no CRM synchronization or durable retry queue; private Blob preserves the lead and operator reconciliation handles notifications that remain unresolved after bounded retries. Restrict store access to those responsible for inquiries, and do not expose the store or an unauthenticated lead-reading endpoint.
+Automatic deletion remains disabled at the owner's explicit request. Private Blob preserves the lead. The Google Sheets mirror can rebuild from Blob records, while operator reconciliation handles email notifications that remain unresolved after bounded retries. Restrict store access to those responsible for inquiries, and do not expose the store or an unauthenticated lead-reading endpoint.

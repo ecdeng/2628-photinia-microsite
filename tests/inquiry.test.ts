@@ -1,7 +1,7 @@
 import assert from "node:assert/strict";
 import test from "node:test";
-import { POST } from "../app/api/inquiry/route";
-import { handleInquiryRequest, InquiryConflictError, type CapturedInquiry } from "../lib/inquiry-delivery";
+import { afterInquiryStored, POST } from "../app/api/inquiry/route";
+import { handleInquiryRequest, InquiryConflictError, type CapturedInquiry, type StoredInquiry } from "../lib/inquiry-delivery";
 
 const validInquiry = {
   propertyId: "2628-photinia",
@@ -21,11 +21,11 @@ function request(body: unknown, origin = "http://localhost") {
   });
 }
 
-function delivery(store: (inquiry: CapturedInquiry) => Promise<void>) {
+function delivery(store: (inquiry: CapturedInquiry) => Promise<void | StoredInquiry>) {
   return {
     propertyId: validInquiry.propertyId,
     createReceiptId: (submissionId: string) => `receipt-${submissionId}`,
-    store,
+    store: async (inquiry: CapturedInquiry): Promise<StoredInquiry> => (await store(inquiry)) ?? { disposition: "created", inquiry },
   };
 }
 
@@ -51,7 +51,7 @@ test("fails visibly when durable delivery is not configured", async () => {
   }
 });
 
-test("stores a validated inquiry before sending its notification", async () => {
+test("stores a validated inquiry before post-storage work", async () => {
   const events: string[] = [];
   let captured: CapturedInquiry | undefined;
   const response = await handleInquiryRequest(request(validInquiry), {
@@ -59,27 +59,27 @@ test("stores a validated inquiry before sending its notification", async () => {
       captured = inquiry;
       events.push("stored");
     }),
-    notify: async () => {
-      events.push("notified");
+    afterStored: async () => {
+      events.push("after_stored");
     },
   });
   const payload: unknown = await response.json();
 
   assert.equal(response.status, 201);
-  assert.deepEqual(events, ["stored", "notified"]);
+  assert.deepEqual(events, ["stored", "after_stored"]);
   assert.equal(captured?.propertyId, "2628-photinia");
   assert.equal(captured?.receiptId, `receipt-${validInquiry.submissionId}`);
   assert.equal(typeof payload === "object" && payload !== null && "receiptId" in payload, true);
 });
 
-test("does not lose a captured inquiry when notification fails", async () => {
+test("does not lose a captured inquiry when post-storage work fails", async () => {
   let stored = false;
   const originalError = console.error;
   console.error = () => undefined;
   try {
     const response = await handleInquiryRequest(request(validInquiry), {
-      ...delivery(async () => { stored = true; }),
-      notify: async () => { throw new Error("mail unavailable"); },
+      ...delivery(async (inquiry) => { stored = true; return { disposition: "created", inquiry }; }),
+      afterStored: async () => { throw new Error("mail unavailable"); },
     });
     assert.equal(response.status, 201);
     assert.equal(stored, true);
@@ -106,13 +106,64 @@ test("rejects a property identifier that is not the server-configured listing", 
   assert.equal(stored, false);
 });
 
-test("duplicate retries return a receipt without notifying twice", async () => {
-  let notifications = 0;
+test("duplicate retries run post-storage work with the canonical record", async () => {
+  let postStoreCalls = 0;
   const response = await handleInquiryRequest(request(validInquiry), {
-    ...delivery(async () => {}), store: async () => ({ created: false }), notify: async () => { notifications++; },
+    ...delivery(async (inquiry) => ({ disposition: "existing", inquiry: { ...inquiry, capturedAt: "2026-09-18T00:00:00.000Z" } })),
+    afterStored: async (stored) => {
+      postStoreCalls++;
+      assert.equal(stored.disposition, "existing");
+      assert.equal(stored.inquiry.capturedAt, "2026-09-18T00:00:00.000Z");
+    },
   });
   assert.equal(response.status, 201);
-  assert.equal(notifications, 0);
+  assert.equal(postStoreCalls, 1);
+});
+
+test("post-storage composition syncs duplicate leads without sending duplicate email", async () => {
+  let sheetCalls = 0;
+  let emailCalls = 0;
+  const existingInquiry: CapturedInquiry = {
+    propertyId: "2628-photinia",
+    name: "QA Test",
+    email: "qa@example.com",
+    phone: "",
+    message: "This is an authorized delivery test.",
+    consent: true,
+    receiptId: "receipt",
+    capturedAt: "2026-09-18T00:00:00.000Z",
+  };
+  const stored: StoredInquiry = {
+    disposition: "existing",
+    inquiry: existingInquiry,
+  };
+  await afterInquiryStored(stored, {
+    sync: async () => { sheetCalls++; },
+    notify: async () => { emailCalls++; },
+  });
+  assert.equal(sheetCalls, 1);
+  assert.equal(emailCalls, 0);
+});
+
+test("post-storage composition syncs and notifies a new lead", async () => {
+  let sheetCalls = 0;
+  let emailCalls = 0;
+  const inquiry: CapturedInquiry = {
+    propertyId: "2628-photinia",
+    name: "QA Test",
+    email: "qa@example.com",
+    phone: "",
+    message: "This is an authorized delivery test.",
+    consent: true,
+    receiptId: "receipt",
+    capturedAt: "2026-09-18T00:00:00.000Z",
+  };
+  await afterInquiryStored({ disposition: "created", inquiry }, {
+    sync: async () => { sheetCalls++; },
+    notify: async () => { emailCalls++; },
+  });
+  assert.equal(sheetCalls, 1);
+  assert.equal(emailCalls, 1);
 });
 
 test("storage failure never reports success and conflicting retries return 409", async () => {

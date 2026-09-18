@@ -19,11 +19,16 @@ export type CapturedInquiry = Omit<InquiryPayload, "website" | "submissionId"> &
   capturedAt: string;
 }>;
 
+export type StoredInquiry = Readonly<{
+  disposition: "created" | "existing";
+  inquiry: CapturedInquiry;
+}>;
+
 export type InquiryDelivery = Readonly<{
   propertyId: string;
   createReceiptId: (submissionId: string) => string;
-  store: (inquiry: CapturedInquiry) => Promise<void | { created: boolean }>;
-  notify?: (inquiry: CapturedInquiry) => Promise<void>;
+  store: (inquiry: CapturedInquiry) => Promise<StoredInquiry>;
+  afterStored?: (stored: StoredInquiry) => Promise<void>;
   defer?: (task: () => Promise<void>) => void;
 }>;
 
@@ -78,7 +83,7 @@ export async function handleInquiryRequest(request: Request, delivery: InquiryDe
     capturedAt: new Date().toISOString(),
   };
 
-  let stored: void | { created: boolean };
+  let stored: StoredInquiry;
   try {
     stored = await delivery.store(captured);
   } catch (cause) {
@@ -87,17 +92,17 @@ export async function handleInquiryRequest(request: Request, delivery: InquiryDe
     return error("Unable to save inquiry. Please retry or contact the listing team directly.", 503);
   }
 
-  if (delivery.notify && stored?.created !== false) {
-    const notify = async () => {
+  if (delivery.afterStored) {
+    const afterStored = async () => {
       try {
-        await delivery.notify?.(captured);
+        await delivery.afterStored?.(stored);
       } catch {
-        console.error("inquiry_notification_unresolved", { receiptId });
+        console.error("inquiry_post_store_failed", { receiptId });
       }
     };
-    if (delivery.defer) delivery.defer(notify);
-    else await notify();
+    if (delivery.defer) delivery.defer(afterStored);
+    else await afterStored();
   }
 
-  return Response.json({ receiptId: captured.receiptId }, { status: 201 });
+  return Response.json({ receiptId: stored.inquiry.receiptId }, { status: 201 });
 }
